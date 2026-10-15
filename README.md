@@ -32,6 +32,7 @@ independent check of the power-spectrum errors.
 config.yml               falcon graph: which node simulates what, the priors, the two estimators,
                          the embedding networks, buffer and sampling settings
 README.md                this file
+environment.yml          the conda environment (pinned versions), see [Quick start](#quick-start)
 
 src/                     the simulator (falcon imports it via config.yml `paths.import`)
   settings.py            THE place to change the set-up: grid, box, z, antennas, noise, calibrator,
@@ -71,8 +72,15 @@ notebooks/               analysis
 figures/                 figures of scripts/ and notebooks/ (pipeline_plots/, calibrator, S_ref)
 tests/                   unittest suite, see [Tests](#tests)
 output/run_04/           the falcon run: config.yml, graph/ (trained networks, logs), samples/
-                         (posterior and training-buffer samples), wandb/, the analysis plots
+                         (posterior and training-buffer samples), wandb/, the analysis plots.
+                         NOT in the git repository (see below)
 ```
+
+**`output/` is not version-controlled** (`.gitignore`; `run_04` is 1.9 GB). A fresh clone has the
+simulator, `data/`, the Fisher bundle and the figures, but no trained run: `TestRun04` is skipped,
+and `notebooks/plot_posteriors.ipynb`, `fisher/fisher_analysis.ipynb` (its SBI comparison) and the
+numbers in [Results so far](#results-so-far-run_04) need a run — either a copy of `output/run_04`
+from the original machine or a new `falcon launch`.
 
 ---
 
@@ -188,10 +196,13 @@ reconstruction error is 0.132 (limited by the 23.5 % unsampled UV cells); ignori
 ## Quick start
 
 All commands run from the project root. The environment used for `run_04` is the conda env
-`newfalcongaincal` (Python 3.12, torch 2.5.1 + CUDA 12.4, falcon 0.4.1, numpy, scipy, matplotlib,
-pyyaml, corner, pandas, jupyter / nbclient).
+`newfalcongaincal` (Python 3.12, torch 2.5.1 + CUDA 12.4, falcon-sbi 0.4.1, sbi, wandb, numpy, scipy,
+matplotlib, pyyaml, corner, pandas, jupyter / nbclient), pinned in `environment.yml`:
 
 ```bash
+conda env create -f environment.yml && conda activate newfalcongaincal
+
+
 # check everything (~15 s; GPU if available, CUDA_VISIBLE_DEVICES="" forces the CPU)
 python -m unittest discover -s tests -v
 
