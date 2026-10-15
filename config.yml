@@ -1,0 +1,490 @@
+# -----------------------------------------------------------------------------
+# SKA-Low AA* — joint gain calibration + 21-cm power-spectrum inference with falcon
+#
+# Stage 1  q(z  | V_ref):           gains from the reference-calibrator visibilities
+# Stage 2  q(pw | pk_obs, V_ref):   power spectrum from the dirty-image P(k), marginalising
+#                                   over the gains through V_ref
+#
+#   z ──► gains ──────────────────────────────────────────────► V_ref   [observed]
+#               └──► stacked_uv ──┐
+#                                 ├──► tracked_uv ──► normed_tracked_uv ──┐
+#   pw ──► df ──► bt ──► image ──► uvimage ──┘                            ├──► x ──► obsx ──► pk_obs [observed]
+#          └──► pk_df              └──► noiseimage ──────────────────────┘
+#
+# Simulator classes: src/model.py. Set-up (box size, noise, known antennas, ...):
+# src/settings.py. Observations: data/*.npy, written by `python scripts/gen_mock_data.py`.
+# Run from this directory:  falcon launch  (see README.md)
+# -----------------------------------------------------------------------------
+
+# -----------------------------------------------------------------------------
+# Logging
+# -----------------------------------------------------------------------------
+logging:
+  wandb:
+    enabled: true
+    project: Papertestsaastar
+    group: Papertest1aastarrupdatedrun04
+    dir: ${run_dir}
+  local:
+    enabled: true
+    dir: ${paths.graph}
+  # console:
+  #   level: DEBUG
+
+# -----------------------------------------------------------------------------
+# Paths
+# -----------------------------------------------------------------------------
+paths:
+  import: "./src"
+  # buffer: ${run_dir}/sim_dir
+  graph:  ${run_dir}/graph
+  samples: ${run_dir}/samples
+
+# -----------------------------------------------------------------------------
+# Training buffer
+# -----------------------------------------------------------------------------
+buffer:
+  # min_samples, validation_samples and simulate_count scaled down 4x (previously 16384 /
+  # 1024 / 2048; max_samples unchanged) to shorten the initial simulation
+  # (min_samples + validation_samples = 4352 samples, ~4 MB each).
+  min_samples:         4096
+  max_samples:         32768
+  validation_samples:  256
+  simulate_count:      512
+  simulate_chunk_size: 128
+  simulate_when_full:  true
+  simulate_interval:   1
+  store_fraction:      0.01
+
+# -----------------------------------------------------------------------------
+# Graph
+# -----------------------------------------------------------------------------
+graph:
+
+  # ── Root nodes (parameters to infer) ──────────────────────────────────────
+
+  z:
+    # Gain perturbations of the UNKNOWN antennas, interleaved (Re, Im): g = 1 + z.
+    # 212 parameters = 2*(nant-1-KNOWN_ANT) = 2*(307-1-200): 1 reference antenna g_0 = 1,
+    # 106 unknown (antennas 1-106), 200 known with g = 1 (KNOWN_ANT in src/settings.py).
+    # The number of priors below must equal 2*(nant-1-KNOWN_ANT).
+    # Stage 1: infer gains from the reference visibility V_ref.
+    evidence: [V_ref]
+    simulator:
+      _target_: falcon.priors.Product
+      priors:
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+        - ['uniform', -1.0, 1.0]
+    estimator:
+      _target_: falcon.estimators.Gaussian
+      loop:
+        num_epochs: 500
+        batch_size: 128
+        early_stop_patience: 40
+        cache_sync_every: 1
+        cache_on_device: false
+      network:
+        hidden_dim: 256
+        num_layers: 3
+        momentum: 0.10
+        min_var: 1.0e-20
+        eig_update_freq: 1
+      embedding:
+        # [Re, Im] of the observed first row V_ref[0, 1:] (always-zero entries masked
+        # from the first batch): 2*M features, M = 230 observed of nant-1 = 306.
+        # All 106 unknown antennas share an observed baseline with antenna 0, so the first
+        # row constrains every gain. (With KNOWN_ANT = 100, antennas 201-206 had none; the
+        # upper-triangle variant embedding.VRefUpperTriEmbedding, 2*26725 features, reaches all.)
+        _target_: embedding.VRefFirstRowEmbedding
+        _input_:  [V_ref]
+      optimizer:
+        lr: 0.001
+        betas: [0.9, 0.9]
+        lr_decay_factor: 0.5
+        scheduler_patience: 64
+      inference:
+        gamma: 0.5
+        discard_samples: false
+        log_ratio_threshold: -20.0
+    sample_chunk_size: 128
+    ray:
+      num_gpus: 0.9
+
+
+  pw:
+    # Broken-power-law parameters [log10(A), n1, n2, log10(k_break)]
+    #   P(k) = A * (k/k_break)^n1   for k <= k_break
+    #          A * (k/k_break)^n2   for k >  k_break
+    # Stage 2: infer sky params from science image, conditioning on V_ref
+    # so the estimator can implicitly marginalise over gain uncertainty.
+    evidence: [pk_obs, V_ref]
+    simulator:
+      _target_: falcon.priors.Product
+      priors:
+        # BoxSize 512 Mpc / 128 px (dx = 4 Mpc): k = 0.0123 .. 0.785 (Nyquist) Mpc^-1.
+        # Truth (src/settings.py): [1.0, -0.5, -2.0, -0.8], pixel rms σ_δ = 0.31 (σ_T = 8.2 mK).
+        # Ranges: the truth is >= 5.3 Fisher sigma from every edge, each prior >= 14 sigma wide;
+        # every draw has σ_δ < 1 (worst corner 0.96; 2 % of draws > 0.5) — δ stays physical;
+        # σ_T 0.6-10.7 mK (5-95 % of draws), the range of a z ~ 9 21-cm slice at 4 Mpc.
+        - ['uniform', -1.0, 1.3]   # log10(A) — amplitude at the break [Mpc^2]
+        - ['uniform', -1.5, 0.5]   # n1 — large-scale slope (k <= k_break)
+        - ['uniform', -3.0, -1.7]  # n2 — small-scale slope (k >  k_break)
+        - ['uniform', -1.2, -0.5]  # log10(k_break) — turnover wavenumber [Mpc^-1]
+    estimator:
+      _target_: falcon.estimators.Flow
+      loop:
+        num_epochs: 400
+        batch_size: 128
+        early_stop_patience: 64
+      network:
+        net_type: maf # nsf, zuko_gf, maf, nice, sospf, naf, gf
+        theta_norm: true
+      embedding:
+        # MLP(log10 pk_obs, empty + no-data k-bins masked) -> feat_dim, plus polar
+        # features [log|v|/10, cos, sin] of the observed V_ref first row:
+        # feat_dim + 3*M, M = 230. Upper-triangle variant: embedding.PkVRefUpperEmbedding
+        _target_: embedding.PkVRefEmbedding
+        hidden_dim: 256
+        feat_dim:   128
+        roundoff_rtol: 1.0e-11   # pk bins below this x subset peak = FFT round-off → masked
+        log_floor:     1.0e-15   # log10(pk.clamp(min=log_floor)); bins with data >= 2.5e-3
+        _input_:  [pk_obs, V_ref]
+      optimizer:
+        lr: 0.001
+        lr_decay_factor: 0.5
+        scheduler_patience: 16
+      inference:
+        gamma: 0.5
+        discard_samples: false
+        log_ratio_threshold: -20
+        sample_reference_posterior: false
+        use_best_models_during_inference: true
+    ray:
+      num_gpus: 0.9
+
+  # ── Deterministic nodes (classes in src/model.py) ─────────────────────────
+
+  gains:
+    # Antenna gains (B, 2*307), interleaved (Re, Im): [g_0 = 1, 1 + z, known g = 1].
+    parents: [z]
+    simulator:
+      _target_: model.GainsFromZ
+
+  stacked_uv:
+    # Gain-weighted UV maps per subset (B, 2, 128, 128) complex.
+    parents: [gains]
+    simulator:
+      _target_: model.UVTracksFromGains
+    # Chunk the simulation: UVMapGenerator builds (B, 23486 baselines, 52 steps) complex
+    # per subset (+ conjugate copy) — ~1.25 GB at B=128, ~43 GB for the 4352 initial samples.
+    sample_chunk_size: 128
+
+  df:
+    # Density contrast δ (B, 128, 128).
+    parents: [pw]
+    simulator:
+      _target_: model.DensityFromPw
+
+  bt:
+    # 21-cm brightness temperature (B, 128, 128) [mK].
+    parents: [df]
+    simulator:
+      _target_: model.BrightnessFromDensity
+
+  pk_df:
+    # Azimuthally averaged P(k) of δ (B, n_bins) — diagnostic, not used by any estimator.
+    parents: [df]
+    simulator:
+      _target_: model.PkFromDensity
+
+  image:
+    # Science sky (B, 128, 128) [mK]: bt + SCIENCE_FOREGROUND_FLUX × beam-centre Gaussian.
+    parents: [bt]
+    simulator:
+      _target_: model.SkyImageFromBrightness
+
+  uvimage:
+    # Fourier sky (B, 128, 128) complex, FFT order, phase centre = beam centre.
+    parents: [image]
+    simulator:
+      _target_: model.UVSkyFromImage
+
+  tracked_uv:
+    # Gain-weighted sampled sky (B, 2, 128, 128) = stacked_uv × uvimage.
+    parents: [uvimage, stacked_uv]
+    simulator:
+      _target_: model.TrackedUVFromSky
+
+  normed_tracked_uv:
+    # tracked_uv / integrations per pixel (signal averaged over integrations; 0 unsampled).
+    parents: [tracked_uv]
+    simulator:
+      _target_: model.NormalisedUV
+
+  noiseimage:
+    # Hermitian thermal noise, NOISE_STD / sqrt(integrations per pixel) — (B, 2, 128, 128).
+    # The uvimage parent only supplies the batch size; NOISE_STD is set in src/settings.py.
+    parents: [uvimage]
+    simulator:
+      _target_: model.ThermalNoiseUV
+
+  x:
+    # Observed normalised UV maps (B, 2, 128, 128) = normed_tracked_uv + noiseimage.
+    parents: [normed_tracked_uv, noiseimage]
+    simulator:
+      _target_: model.VisibilitiesWithNoise
+    # observed: "data/x_obs.npy"
+
+  obsx:
+    # Dirty images (B, 2, 128, 128) real [mK], pixel-aligned with `image`.
+    parents: [x]
+    simulator:
+      _target_: model.DirtyImageFromUV
+    # observed: "data/obsx_obs.npy"
+
+  pk_obs:
+    # Azimuthally averaged P(k) of each subset's dirty image (B, 2, n_bins).
+    parents: [obsx]
+    simulator:
+      _target_: model.PkFromDirtyImage
+    observed: "data/pk_obs.npy"
+
+  V_ref:
+    # Reference visibilities G S_ref G† + noise (B, 307, 307) complex. S_ref (the known
+    # calibrator at the beam centre) is fixed and built in model.py from src/settings.py.
+    parents: [gains]
+    simulator:
+      _target_: model.ReferenceVisFromGains
+    sample_chunk_size: 128   # (B, 307, 307) complex intermediates
+    observed: "data/V_ref_obs.npy"
+
+  # ── Dense science path (disabled) ─────────────────────────────────────────
+  # SkyMatrixGenerator gathers (B, 46971, 52) every batch — expensive and unused by the
+  # estimators. Uncomment for analysis.
+
+  # S_full:
+  #   parents: [uvimage]
+  #   simulator:
+  #     _target_: model.SkyMatrixFromUVSky
+
+  # V_dense:
+  #   parents: [gains, S_full]
+  #   simulator:
+  #     _target_: model.DenseVisFromGains
+
+# -----------------------------------------------------------------------------
+# Sampling
+# -----------------------------------------------------------------------------
+sample:
+  posterior:
+    n: 1500
