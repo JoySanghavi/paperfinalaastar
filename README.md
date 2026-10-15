@@ -66,8 +66,10 @@ notebooks/               analysis
   noise.ipynb            radiometer equation -> NOISE_STD for settings.py; signal vs noise in pk_obs
   Antennaedebug.ipynb    exploratory: self-contained copy of the simulator, gain /
                          switched-off-antenna effects
-  codetest.ipynb         walkthrough: data/ rebuilt step by step with plain torch (no src/ imports),
-                         bit-identical to gen_mock_data.py, with a plot and comment per stage
+  codetest.ipynb         independent check: data/ rebuilt step by step in plain numpy (no src/ imports;
+                         UV tracks from the station layout, explicit DFTs with the phase centre written
+                         out, x/y and FFT-order tests), data | mine | difference plot per stage,
+                         asserts agreement with data/ to float32 precision
 
 figures/                 figures of scripts/ and notebooks/ (pipeline_plots/, calibrator, S_ref)
 tests/                   unittest suite, see [Tests](#tests)
@@ -381,7 +383,7 @@ Nothing in the project is written by the tests (scripts and notebooks run with t
   contribute and the mean of |g|² (1.25 for the true gains) exceeds |mean g|² (1.02). For the mock
   observation this biases pk_obs of subset 0 (baselines of stations 0–89, almost all touching an
   unknown station) by +8–30 % at k ≈ 0.19–0.30 Mpc⁻¹ and up to ×2.3 near k ≈ 0.74, and subset 1 by
-  0 to −10 % (`notebooks/codetest.ipynb`, step 11). The bias is scale-dependent and degenerate with the
+  0 to −10 % (`notebooks/codetest.ipynb`, section 9). The bias is scale-dependent and degenerate with the
   P(k) shape; Stage 2 sees `V_ref` so that it can undo it.
 * **2D, single channel.** The sky is one 2D slice (one 227 kHz channel at 4 Mpc depth); a real
   power-spectrum measurement averages many channels.

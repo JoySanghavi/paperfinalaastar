@@ -68,7 +68,8 @@ class TestNotebooks(unittest.TestCase):
         self.run_nb("notebooks/Antennaedebug.ipynb")
 
     def test_codetest(self):
-        # asserts that its by-hand rebuild of data/ is bit-identical to gen_mock_data.py
+        # asserts that its independent numpy rebuild of data/ (and of the UV tracks from the
+        # station layout) agrees with gen_mock_data.py to float32 precision
         self.run_nb("notebooks/codetest.ipynb")
 
 
