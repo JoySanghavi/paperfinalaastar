@@ -1,0 +1,396 @@
+%% ===========================================================================
+%% NOTE TO JOY (delete before pasting)
+%%  * Place before \section{Gaussian NPE}. Uses only preamble macros; no new
+%%    packages. New labels start with sec:ds- / eq:ds- / fig:ds-.
+%%  * Notation follows Lyu et al. (z, x, x_obs, \tilde p, q_\phi, q_\psi,
+%%    D_live). Clash: the draft uses \bz for the gains specifically. Either
+%%    rename the gains (e.g. \bm{\zeta}) or say "z denotes a generic parameter
+%%    block" when the example section starts.
+%%  * Describes falcon 0.4.1 as configured in ../config.yml: unweighted NPE
+%%    loss, tempered proposal, FIFO buffer, pruning switched off.
+%%  * The buffer numbers in sec:training (16384-32768 / 1024 / 2048) do not
+%%    match config.yml (min 4096, max 32768, validation 256, 512 per refresh).
+%%  * The draft labels fig:overview twice.
+%%  * New bib entries at the end of this file (from memory, please verify).
+%% ===========================================================================
+
+
+% ============================================================================
+\section{Dynamic simulation-based inference with tempered proposals}
+\label{sec:dsbi}
+
+We consider parameters $\bz\in\mathbb{R}^{D}$ with prior $p(\bz)$, a
+stochastic simulator that draws data $\bx\sim p(\bx\mid\bz)$, and a single
+observation $\bx_{\mathrm{obs}}$. The simulator can be run, but the likelihood
+$p(\bx\mid\bz)$ cannot be evaluated, typically because it is an integral over
+many latent random variables inside the simulator. All inference in this
+paper uses the dynamic SBI framework of \citet{lyu_dynamic_2026}, as
+implemented in \textsc{Falcon} v0.4.1 \citep{falcon_note}. This section
+recalls the ideas from that work that we rely on, and states precisely which
+choices the implementation makes. Where v0.4.1 differs from the algorithms as
+published, we say so.
+
+% ----------------------------------------------------------------------------
+\subsection{Neural posterior estimation on a proposal}
+\label{sec:ds-proposal}
+
+Neural posterior estimation (NPE) fits a conditional density estimator
+$q_{\bm{\phi}}(\bz\mid\bx)$, here a normalising flow or a Gaussian, to
+simulated pairs by minimising the negative log-density
+\begin{equation}
+    \mathcal{L}(\bm{\phi})=-\frac{1}{N}\sum_{i=1}^{N}\log q_{\bm{\phi}}(\bz_i\mid\bx_i),
+    \qquad \bz_i\sim\tilde p(\bz),\quad \bx_i\sim p(\bx\mid\bz_i).
+    \label{eq:ds-npe}
+\end{equation}
+Minimising Eq.~\eqref{eq:ds-npe} is equivalent to minimising the forward
+Kullback--Leibler divergence from the posterior implied by the training
+distribution to $q_{\bm{\phi}}$, averaged over data
+\citep{papamakarios_fast_2016,greenberg_automatic_2019}. Its interpretation
+therefore depends on where the parameters come from.
+
+If they are drawn from the prior, $\tilde p=p$, the estimator is
+\emph{amortised}: once trained, it returns the posterior for any observation.
+The cost is that the training set covers the whole prior predictive
+distribution, while the posterior of a particular $\bx_{\mathrm{obs}}$ may
+occupy a vanishingly small fraction of the prior volume. In high-dimensional
+or high-precision problems, an amortised estimator then needs a prohibitive
+number of simulations to resolve that posterior. \emph{Sequential} SBI instead
+draws the parameters from a proposal $\tilde p\neq p$ that is gradually
+focused on the posterior of $\bx_{\mathrm{obs}}$
+\citep{papamakarios_fast_2016,lueckmann_flexible_2017,greenberg_automatic_2019,deistler_truncated_nodate}.
+The price is a bias: the minimiser of Eq.~\eqref{eq:ds-npe} is now the
+posterior under the proposal rather than the prior,
+\begin{equation}
+    q_{\bm{\phi}}(\bz\mid\bx)\propto p(\bx\mid\bz)\,\tilde p(\bz),
+    \qquad\text{so}\qquad
+    p(\bz\mid\bx_{\mathrm{obs}})\propto q_{\bm{\phi}}(\bz\mid\bx_{\mathrm{obs}})\,\frac{p(\bz)}{\tilde p(\bz)} .
+    \label{eq:ds-correct}
+\end{equation}
+Sequential methods differ mainly in where they remove this bias. SNPE-A
+\citep{papamakarios_fast_2016} trains on the plain loss and multiplies by
+$p/\tilde p$ afterwards. SNPE-B \citep{lueckmann_flexible_2017} puts the
+weights $p(\bz_i)/\tilde p(\bz_i)$ into the loss, so the network learns the
+true posterior directly. SNPE-C \citep{greenberg_automatic_2019} uses a
+contrastive loss that is insensitive to the proposal. The two dynamic variants
+of \citet{lyu_dynamic_2026} follow the first two routes (DS-A and DS-B); a
+dynamic SNPE-C proved unstable in their tests. \textsc{Falcon} v0.4.1 follows
+the SNPE-A/DS-A route: every estimator is trained with the unweighted loss
+Eq.~\eqref{eq:ds-npe}, and the ratio in Eq.~\eqref{eq:ds-correct} is applied
+only when the final posterior is sampled (Sec.~\ref{sec:ds-recover}). This
+keeps the training objective identical to amortised NPE, which matters for
+the stability of the Gaussian estimator of Sec.~\ref{sec:method}, whose
+covariance is accumulated from unweighted residuals.
+
+% ----------------------------------------------------------------------------
+\subsection{From rounds to a live dataset}
+\label{sec:ds-loop}
+
+Classical sequential SBI runs in rounds: simulate a batch from the current
+proposal, train a network on it until the validation loss stops improving,
+derive a new proposal from the trained network, and repeat. \citet{lyu_dynamic_2026}
+point out two sources of waste in this structure. First, the network keeps
+training on simulations that, part-way through the round, it already
+recognises as irrelevant to $\bx_{\mathrm{obs}}$. Second, new simulations are
+requested only at the end of a round, so either the simulator waits for the
+network or the network waits for the simulator. Their comparison on a
+benchmark with extreme prior-to-posterior compression showed that removing
+the rounds gives the same posterior with substantially fewer simulations and
+less training time, and with smoother training curves because the training
+distribution never jumps.
+
+Dynamic SBI therefore replaces the fixed training set of a round by a
+\emph{live dataset} $\mathcal{D}_{\mathrm{live}}$, a buffer of simulated pairs
+that keeps changing while the network trains on it. Training and simulation
+become two concurrent processes, which communicate only through
+$\mathcal{D}_{\mathrm{live}}$, the current proposal $\tilde p$ and the
+observation $\bx_{\mathrm{obs}}$. The centre panel of Fig.~\ref{fig:overview}
+shows this exchange: simulations flow from the simulator into the buffer on
+which the neural posterior estimators train, and the estimators' tempered
+proposals flow back to decide where the simulator samples next. The steps of
+each process are listed in Fig.~\ref{fig:ds-loop}. One can view this
+as the limit of round-based SBI in which the number of rounds goes to infinity
+while each round shrinks to a few gradient steps. How closely that limit is
+reached is set by the relative cost of a simulation, a gradient step and a
+proposal draw \citep{lyu_dynamic_2026}. In \textsc{Falcon} v0.4.1 the two
+processes work as follows.
+
+\emph{Simulation process.} The buffer is first filled with simulations from
+the prior. At a fixed time interval, $J$ new parameter vectors are drawn from
+the most recent proposal and passed through the simulator. The newest
+$N_{\mathrm{val}}$ simulations form the validation set, and older ones move
+into the training set. When the training set exceeds its capacity $N_{\max}$,
+its oldest simulations are removed. The buffer is therefore a first-in,
+first-out (FIFO) window that slides towards the posterior as the proposal
+sharpens, and its distribution at any time is a mixture of the proposals of
+the recent past.
+
+\emph{Training process.} The network trains in epochs and re-reads the
+buffer before each epoch, so new simulations enter training within one epoch
+of being produced. After every epoch the loss is evaluated on the validation
+set. Because that set holds the newest simulations, this loss measures how
+well the network does under the current proposal rather than under the prior.
+The network with the lowest validation loss so far is stored as the best
+network, and only this best network is used to draw proposals and, at the
+end, posterior samples. Training stops once the validation loss has not
+improved for a fixed number of epochs. Since the data distribution keeps
+moving, the input and output normalisations of the networks are tracked
+online (Sec.~\ref{sec:mean}). For the same reason, \textsc{Falcon} uses a
+reduced second-moment decay in the optimiser ($\beta_2=0.9$), so that it
+adapts faster to the drifting gradient statistics.
+
+\emph{Pruning (not used here).} \citet{lyu_dynamic_2026} additionally remove
+a simulation as soon as the network has clearly moved away from it. For DS-A
+the test is
+\begin{equation}
+    r_i=\log q_{\bm{\phi}}(\bz_i\mid\bx_{\mathrm{obs}})-\log q'_{\bm{\phi}}(\bz_i\mid\bx_{\mathrm{obs}})<r_{\mathrm{th}},
+    \label{eq:ds-prune}
+\end{equation}
+where $q'_{\bm{\phi}}$ is the density the network assigned to $\bz_i$ when it
+was proposed, stored with the sample, and $r_{\mathrm{th}}=-20$. A simulation
+is thus dropped once its density under the current network has fallen by a
+factor of $\mathrm{e}^{20}$, at which point it carries essentially no
+information about the posterior. The test needs only one network evaluation
+per sample, which makes it cheap enough to apply continuously. DS-B instead
+cuts at a quantile of the proposal density and stores fixed importance
+weights. \textsc{Falcon} v0.4.1 implements Eq.~\eqref{eq:ds-prune}, but it is
+switched off in this work, so simulations leave the buffer only through the
+FIFO limit. The two mechanisms affect the posterior correction differently,
+as we discuss in Sec.~\ref{sec:ds-recover}.
+
+\begin{figure}[t]
+\centering
+\fbox{\begin{minipage}{0.94\linewidth}\small
+\textbf{Initialise:} $\tilde p\leftarrow p$; fill $\mathcal{D}_{\mathrm{live}}$ with
+prior simulations.\\[2pt]
+\textbf{Simulation process} (every $\Delta t$): draw $J$ samples
+$\bz\sim\tilde p$, simulate $\bx\sim p(\bx\mid\bz)$, append to
+$\mathcal{D}_{\mathrm{live}}$; the newest $N_{\mathrm{val}}$ pairs validate,
+and training pairs beyond $N_{\max}$ are dropped oldest-first.\\[2pt]
+\textbf{Training process} (per epoch): sync with $\mathcal{D}_{\mathrm{live}}$;
+minimise Eq.~\eqref{eq:ds-npe} over mini-batches; validate; keep the best
+network; publish $\tilde p$ from it via Eq.~\eqref{eq:ds-ansatz}; stop after a
+fixed number of epochs without improvement.\\[2pt]
+\textbf{Output:} posterior samples from the best network, corrected as in
+Sec.~\ref{sec:ds-recover}.
+\end{minipage}}
+\caption{Dynamic SBI as run in \textsc{Falcon} v0.4.1. The two processes run
+concurrently and interact only through $\mathcal{D}_{\mathrm{live}}$ and
+$\tilde p$.}
+\label{fig:ds-loop}
+\end{figure}
+
+% ----------------------------------------------------------------------------
+\subsection{Tempered proposal}
+\label{sec:ds-temper}
+
+The obvious proposal is the current posterior estimate itself,
+$\tilde p=q_{\bm{\phi}}(\bz\mid\bx_{\mathrm{obs}})$. This is unstable: by
+Eq.~\eqref{eq:ds-correct}, a network trained on simulations from a proposal
+is narrower than that proposal, so feeding it back makes the next proposal
+narrower still, and the loop contracts towards a point. Lyu et al.\ avoid this
+by aiming the proposal at a \emph{tempered} posterior, in which only a
+fraction $\gamma$ of the information in the data is used
+\citep[][their Eq.~7]{lyu_dynamic_2026}:
+\begin{equation}
+    \tilde p(\bz)\propto p(\bx_{\mathrm{obs}}\mid\bz)^{\gamma}\,p(\bz),
+    \qquad \gamma>0.
+    \label{eq:ds-temper}
+\end{equation}
+Because the likelihood is not available, the proposal is built from the
+network as
+\begin{equation}
+    \tilde p(\bz)\propto p(\bz)\left[\frac{q_{\bm{\phi}}(\bz\mid\bx_{\mathrm{obs}})}{p(\bz)}\right]^{a},
+    \qquad a=\frac{\gamma}{1+\gamma}.
+    \label{eq:ds-ansatz}
+\end{equation}
+
+Why this choice reaches Eq.~\eqref{eq:ds-temper} is easiest to see by
+tracking the power of the likelihood. Suppose the current proposal is
+$\tilde p\propto p(\bx_{\mathrm{obs}}\mid\bz)^{\beta}p(\bz)$. A network
+trained on it learns, by Eq.~\eqref{eq:ds-correct}, a density with likelihood
+exponent $1+\beta$, and inserting that into Eq.~\eqref{eq:ds-ansatz} gives a
+new proposal with exponent
+\begin{equation}
+    \beta'=a\,(1+\beta)
+    \qquad\Longrightarrow\qquad
+    \beta_t=\gamma\,\bigl(1-a^{t}\bigr)\;\to\;\gamma
+    \quad\text{for }\beta_0=0,
+    \label{eq:ds-fixedpoint}
+\end{equation}
+after $t$ updates, starting from the prior. Since $a<1$, the exponent converges
+to $\gamma$, and at that point the network itself represents
+\begin{equation}
+    q_{\bm{\phi}}(\bz\mid\bx_{\mathrm{obs}})\propto p(\bx_{\mathrm{obs}}\mid\bz)^{1+\gamma}\,p(\bz),
+    \label{eq:ds-qfix}
+\end{equation}
+a posterior in which the data are counted $1+\gamma$ times. The same
+recursion shows the two limits. Using the network directly as the proposal
+corresponds to $a=1$; then $\beta'=1+\beta$, the exponent grows without
+bound, and the proposal collapses. For $\gamma\to0$ the proposal stays at the
+prior, and we are back to amortised NPE. In practice the network is never
+fully converged between proposal updates, so Eq.~\eqref{eq:ds-fixedpoint}
+describes where the process is heading rather than its exact path. It
+converges quickly, however: for $\gamma=0.5$, $a=1/3$, and the exponent is
+within $4\%$ of its limit after three updates.
+
+The value of $\gamma$ sets how far the proposal extends beyond the posterior.
+For a likelihood-dominated, locally Gaussian posterior with covariance
+$\bSig$, the proposal has covariance $\bSig/\gamma$ and the network
+$\bSig/(1+\gamma)$. For $\gamma=0.5$ the proposal is therefore
+$\sqrt{2}\approx1.4$ times wider than the posterior in every direction. This
+margin is deliberate. It keeps simulations in the posterior tails, so the
+network remains accurate wherever it will later be evaluated. It also keeps
+the correction weights $p/\tilde p$ of Eq.~\eqref{eq:ds-correct} bounded
+over the posterior. A smaller $\gamma$ is safer but spends more simulations
+outside the posterior. \citet{lyu_dynamic_2026} found the results insensitive
+to $\gamma\in[0.1,1]$, and we use $\gamma=0.5$ for all estimators.
+
+The proposal is unnormalised, and it is sampled differently for the two
+estimator types used in this paper:
+\begin{itemize}
+    \item \emph{Normalising flow.} The flow works in a hypercube to which the
+          prior is mapped, so the prior is flat there. $K$ candidates
+          $\bz_k\sim q_{\bm{\phi}}(\bz\mid\bx_{\mathrm{obs}})$ are drawn and
+          resampled with weights
+          \begin{equation}
+              w_k\propto\frac{\tilde p(\bz_k)}{q_{\bm{\phi}}(\bz_k\mid\bx_{\mathrm{obs}})}
+              =q_{\bm{\phi}}(\bz_k\mid\bx_{\mathrm{obs}})^{-1/(1+\gamma)},
+              \label{eq:ds-sir}
+          \end{equation}
+          i.e.\ sampling--importance--resampling \citep{smith_bayesian_1992}.
+          Candidates outside the prior support receive zero weight. The weights
+          favour candidates in the tails of the network, which is what
+          broadens $q_{\bm{\phi}}$ into $\tilde p$.
+    \item \emph{Full-covariance Gaussian.} The Gaussian works in a latent
+          space where the prior is standard normal. Raising a Gaussian to a
+          power and multiplying by a Gaussian prior gives a Gaussian again, so
+          Eq.~\eqref{eq:ds-ansatz} can be sampled exactly. In practice, the
+          precision that the likelihood adds to the prior in each eigenmode is
+          scaled by $a$ (Sec.~\ref{sec:sample}, Eq.~\ref{eq:temper}).
+\end{itemize}
+
+% ----------------------------------------------------------------------------
+\subsection{Recovering the posterior}
+\label{sec:ds-recover}
+
+After training, the bias of Eq.~\eqref{eq:ds-correct} must be removed. The
+subtlety is that the right $\tilde p$ in that equation is the distribution
+$p'(\bz)$ of the parameters the network was actually trained on, not the last
+published proposal. In a dynamic run the buffer contains simulations
+generated under many successive proposals, so $p'$ is a mixture whose
+composition depends on how long simulations survive in the buffer
+\citep{lyu_dynamic_2026}. Lyu et al.\ give two ways to deal with this, and
+\textsc{Falcon} v0.4.1 uses one for each estimator type.
+\begin{itemize}
+    \item \emph{Auxiliary estimator (flows).} An unconditional flow
+          $q_{\bm{\psi}}(\bz)$ is trained together with $q_{\bm{\phi}}$ on the
+          same mini-batches, ignoring the data, so that it learns the
+          parameter distribution of the buffer, $q_{\bm{\psi}}\approx p'$.
+          Posterior samples are then obtained by resampling candidates
+          $\bz_k\sim q_{\bm{\phi}}(\bz\mid\bx_{\mathrm{obs}})$ with weights
+          $w_k\propto p(\bz_k)/q_{\bm{\psi}}(\bz_k)$. This makes no assumption
+          about the history of the buffer. Its reliability can be monitored
+          with the effective sample size $(\sum_k w_k)^2/\sum_k w_k^2$
+          \citep{kish_survey_1965}, which drops when the network and the
+          buffer distribution overlap poorly.
+    \item \emph{Closed form (Gaussian).} If the buffer is dominated by recent
+          simulations and the proposal has reached its fixed point, then
+          $p'\simeq\tilde p$ of Eq.~\eqref{eq:ds-temper}, and
+          Eqs.~\eqref{eq:ds-correct}, \eqref{eq:ds-ansatz} and \eqref{eq:ds-qfix}
+          combine to
+          \begin{equation}
+              p(\bz\mid\bx_{\mathrm{obs}})\propto p(\bz)
+              \left[\frac{q_{\bm{\phi}}(\bz\mid\bx_{\mathrm{obs}})}{p(\bz)}\right]^{\frac{1}{1+\gamma}}.
+              \label{eq:ds-post}
+          \end{equation}
+          This simply reduces the likelihood exponent of
+          Eq.~\eqref{eq:ds-qfix} from $1+\gamma$ back to one. No auxiliary
+          network is needed, and for the Gaussian it is the same eigenmode
+          tempering as the proposal, with exponent $1/(1+\gamma)$ in place of
+          $\gamma/(1+\gamma)$. Relative to the network, the posterior is
+          therefore $\sqrt{1+\gamma}\approx1.22$ times wider for
+          $\gamma=0.5$.
+\end{itemize}
+\JS{falcon 0.4.1 samples the Gaussian posterior with tempering argument
+$(1+\gamma)/\gamma$ (\texttt{LossBasedEstimator.sample\_posterior}). That is
+exponent $(1+\gamma)/(1+2\gamma)=0.75$ at $\gamma=0.5$, not
+$1/(1+\gamma)=0.67$ as in Eq.~(ds-post); the argument giving Eq.~(ds-post) is
+$1/\gamma$. In the likelihood-dominated limit, the gain posteriors are then
+$\approx6\%$ too narrow. Check with the developers and re-sample before
+submission.}
+
+Which route is accurate depends on the memory of the buffer
+\citep{lyu_dynamic_2026}. Strong pruning, or a FIFO capacity that is small
+compared with the total number of simulations produced, makes the buffer
+forget early proposals quickly, and the closed form is then accurate; Lyu et
+al.\ found the two routes to agree closely in that regime. If early, broader
+simulations survive until the end of training, $p'$ is wider than the fixed
+point and the network is less biased than Eq.~\eqref{eq:ds-qfix} assumes.
+The closed form then over-corrects and returns a posterior that is somewhat
+too wide, and the auxiliary estimator should be preferred. A simple check is
+the age of the simulations in the buffer at the end of the run. In our
+configuration pruning is off, so this memory is set by $N_{\max}$ relative to
+the number of simulations generated after the proposal has settled.
+
+% ----------------------------------------------------------------------------
+\subsection{Graph-structured models}
+\label{sec:ds-graph}
+
+Lyu et al.\ treat a single parameter vector. \textsc{Falcon} generalises the
+loop to forward models written as directed acyclic graphs of simulator nodes,
+executed in parallel with Ray \citep{moritz_ray_2018}. Each inferred parameter
+block $\bz_k$ has its own estimator $q_{\bm{\phi}_k}(\bz_k\mid\bx_k)$,
+conditioned on a chosen subset $\bx_k$ of the observed nodes, and its own
+tempered proposal built from it as above. A new simulation is made by drawing
+every $\bz_k$ from its proposal at $\bx_{k,\mathrm{obs}}$ and re-running all
+downstream nodes of the graph. All estimators train in separate processes
+against the same buffer. Blocks with very different posterior geometry can
+therefore use different estimators, e.g.\ a Gaussian for a nearly Gaussian,
+high-dimensional block and a flow for a low-dimensional, non-Gaussian one
+(Sec.~\ref{sec:method}).
+
+This factorised proposal has one consequence. Each estimator corrects only
+for the proposal of its own block, so any other block that influences
+$\bx_k$ is effectively marginalised under that block's proposal rather than
+under its prior. If $\bx_k$ also contains the data that constrain the other
+block, those data therefore enter the posterior of $\bz_k$ with weight
+$1+\gamma$ instead of one. The effect is small when the other block is much
+better constrained than $\bz_k$, and it vanishes if that block is drawn from
+its prior. Handling datasets that are shaped by several proposals at once is
+listed by \citet{lyu_dynamic_2026} as an open problem.
+\JS{Quantify for gains $\to$ power spectrum, or state as a caveat in the
+Discussion.}
+
+
+%% ===========================================================================
+%% NEW BIBTEX ENTRIES -- copy into references.bib (remove the leading "% ").
+%% Written from memory, not downloaded: please verify.
+%% ===========================================================================
+% @article{smith_bayesian_1992,
+%   author  = {Smith, Adrian F. M. and Gelfand, Alan E.},
+%   title   = {{B}ayesian Statistics without Tears: A Sampling--Resampling Perspective},
+%   journal = {The American Statistician},
+%   volume  = {46},
+%   number  = {2},
+%   pages   = {84--88},
+%   year    = {1992},
+%   doi     = {10.1080/00031305.1992.10475856}
+% }
+%
+% @book{kish_survey_1965,
+%   author    = {Kish, Leslie},
+%   title     = {Survey Sampling},
+%   publisher = {John Wiley \& Sons},
+%   address   = {New York},
+%   year      = {1965}
+% }
+%
+% @inproceedings{moritz_ray_2018,
+%   author    = {Moritz, Philipp and Nishihara, Robert and Wang, Stephanie and Tumanov, Alexey and Liaw, Richard and Liang, Eric and Elibol, Melih and Yang, Zongheng and Paul, William and Jordan, Michael I. and Stoica, Ion},
+%   title     = {Ray: A Distributed Framework for Emerging {AI} Applications},
+%   booktitle = {13th USENIX Symposium on Operating Systems Design and Implementation (OSDI 18)},
+%   pages     = {561--577},
+%   year      = {2018},
+%   eprint    = {1712.05889},
+%   archivePrefix = {arXiv}
+% }

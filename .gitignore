@@ -2,3 +2,6 @@ output/
 __pycache__/
 *.pyc
 .ipynb_checkpoints/
+paperdraft/falcon-0.4.1/*
+paperdraft/falcon-0.5.1/*
+paperdraft/Radiocalibrationpaper/*

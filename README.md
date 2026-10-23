@@ -22,7 +22,8 @@ independent check of the power-spectrum errors.
 | Calibrator | a point-like source (0.3 px Gaussian, 2.7 mK) at the beam centre with a known model |
 | Observations | `V_ref` (calibrator visibilities, 307 × 307) and `pk_obs` (P(k) of the dirty science image, 2 UV subsets × 50 k-bins) |
 | Noise | thermal noise is implemented but **off** (`NOISE_STD = 0`); see [Thermal noise](#thermal-noise) |
-| Status | `output/run_04` was trained at the previous truth and priors, before the switch to Planck 2018 and the first-principles T_b; retrain for a run of the current set-up. See [Results so far](#results-so-far-run_04) |
+| falcon | `config.yml` is written for **falcon-sbi 0.5.x** (checked with 0.5.1); it no longer runs on 0.4.1. See [falcon version](#falcon-version) |
+| Status | `output/run_04` was trained at the previous truth and priors, before the switch to Planck 2018 and the first-principles T_b, with falcon 0.4.1; retrain for a run of the current set-up. See [Results so far](#results-so-far-run_04) |
 
 ---
 
@@ -34,7 +35,7 @@ config.yml               falcon graph: which node simulates what, the priors, th
 README.md                this file
 environment.yml          the conda environment (pinned versions), see [Quick start](#quick-start)
 
-src/                     the simulator (falcon imports it via config.yml `paths.import`)
+src/                     the simulator (falcon imports it via config.yml `paths.imports`)
   settings.py            THE place to change the set-up: grid, box, z, antennas, noise, calibrator,
                          true parameters and seeds. Every script and notebook reads its numbers here
   functionlistnew.py     simulation library: gains, FFT conventions, sky model, UV gridding,
@@ -75,6 +76,7 @@ figures/                 figures of scripts/ and notebooks/ (pipeline_plots/, ca
 tests/                   unittest suite, see [Tests](#tests)
 output/run_04/           the falcon run: config.yml, graph/ (trained networks, logs), samples/
                          (posterior and training-buffer samples), wandb/, the analysis plots.
+                         Made with falcon 0.4.1, so its config.yml is in the old format.
                          NOT in the git repository (see below)
 ```
 
@@ -130,7 +132,7 @@ grid; 26 725 are observed, covering 76.5 % of the 128² UV cells.
 
 | Stage | Posterior | Data | Estimator | Embedding |
 |---|---|---|---|---|
-| 1 — calibration | q(z \| V_ref) | calibrator visibilities | Gaussian | `VRefFirstRowEmbedding`: [Re, Im] of the 230 observed first-row baselines |
+| 1 — calibration | q(z \| V_ref) | calibrator visibilities | full-covariance Gaussian (`GaussianFullCov`) | `VRefFirstRowEmbedding`: [Re, Im] of the 230 observed first-row baselines |
 | 2 — science | q(pw \| pk_obs, V_ref) | P(k) of the dirty image + V_ref | normalising flow (MAF) | `PkVRefEmbedding`: MLP(log10 pk_obs) + [log\|V\|, cos, sin] of the V_ref first row |
 
 Both are trained together on simulations drawn from the priors in `config.yml` (uniform; pw
@@ -165,7 +167,7 @@ above 0.5), so δ stays physical (δ ≥ −1 for almost every pixel); σ_T span
 ## Results so far (`run_04`)
 
 > `run_04` was trained at the **previous truth** (−1.8, −2.0, −3.0, −0.3) with the previous priors,
-> tracks and T_b; the numbers below describe that set-up, not the current one, and
+> tracks and T_b, and with falcon 0.4.1; the numbers below describe that set-up, not the current one, and
 > `tests/test_scripts.py` (`TestRun04`) fails until a run of the current `config.yml` replaces it.
 
 **Power spectrum (Stage 2)** — `fisher/fisher_analysis.ipynb`, `notebooks/plot_posteriors.ipynb`:
@@ -197,12 +199,14 @@ reconstruction error is 0.132 (limited by the 23.5 % unsampled UV cells); ignori
 
 ## Quick start
 
-All commands run from the project root. The environment used for `run_04` is the conda env
-`newfalcongaincal` (Python 3.12, torch 2.5.1 + CUDA 12.4, falcon-sbi 0.4.1, sbi, wandb, numpy, scipy,
-matplotlib, pyyaml, corner, pandas, jupyter / nbclient), pinned in `environment.yml`:
+All commands run from the project root. The environment is the conda env `paperenv` (Python 3.14,
+torch 2.14.1 + CUDA 13.0, falcon-sbi 0.5.1, sbi, wandb, numpy, scipy, matplotlib, pyyaml, corner,
+pandas, jupyter / nbclient), pinned in `environment.yml`. `run_04` was trained in an older env
+(`newfalcongaincal`: Python 3.12, torch 2.5.1 + CUDA 12.4, falcon-sbi 0.4.1), which cannot run the
+current `config.yml`.
 
 ```bash
-conda env create -f environment.yml && conda activate newfalcongaincal
+conda env create -f environment.yml && conda activate paperenv
 
 
 # check everything (~15 s; GPU if available, CUDA_VISIBLE_DEVICES="" forces the CPU)
@@ -222,6 +226,28 @@ python fisher/fisher_forecast.py
 
 Notebooks find the project root themselves (the first parent folder holding `config.yml`), so
 they run from their own folder or from the root.
+
+### falcon version
+
+`config.yml` was first written for falcon 0.4.1 and moved to the 0.5 format. If you edit it or
+compare it with an older run's config, the differences are:
+
+| 0.4.1 | 0.5.x |
+|---|---|
+| `paths.import: "./src"` | `paths.imports: ["./src"]` (a list) |
+| `buffer.store_fraction: 0.01` | removed; `buffer.snapshot_every: 100` writes every 100th sample to disk |
+| `_target_: falcon.estimators.Gaussian` | `_target_: falcon.estimators.GaussianFullCov` |
+| estimator options grouped under `loop:`, `network:`, `optimizer:`, `inference:` | flat: every key under `estimator:` is a constructor argument of the estimator class |
+| `num_epochs` | `max_epochs` |
+| `scheduler_patience` | `lr_patience` |
+| `use_best_models_during_inference` | `use_best_models` |
+
+The embedding (`_target_` / `_input_`), node keys (`parents`, `evidence`, `observed`, `ray`,
+`sample_chunk_size`), priors, logging and the simulator classes in `src/model.py` are unchanged.
+falcon 0.5 rejects unknown `paths` and `buffer` keys and unknown estimator arguments with an error.
+
+`falcon launch -o output/run_XX` resumes from the `config.yml` saved in that run directory, so an
+old run such as `run_04` cannot be resumed with falcon 0.5. Start a new run.
 
 ### Typical workflows
 

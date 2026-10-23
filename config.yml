@@ -22,8 +22,8 @@
 logging:
   wandb:
     enabled: true
-    project: Papertestsaastar
-    group: Papertest1aastarrupdatedrun04
+    project: run_01
+    group: Paperenv
     dir: ${run_dir}
   local:
     enabled: true
@@ -35,7 +35,7 @@ logging:
 # Paths
 # -----------------------------------------------------------------------------
 paths:
-  import: "./src"
+  imports: ["./src"]
   # buffer: ${run_dir}/sim_dir
   graph:  ${run_dir}/graph
   samples: ${run_dir}/samples
@@ -54,7 +54,7 @@ buffer:
   simulate_chunk_size: 128
   simulate_when_full:  true
   simulate_interval:   1
-  store_fraction:      0.01
+  snapshot_every:      100   # write every 100th sample to disk (was store_fraction: 0.01)
 
 # -----------------------------------------------------------------------------
 # Graph
@@ -286,19 +286,30 @@ graph:
         - ['uniform', -1.0, 1.0]
         - ['uniform', -1.0, 1.0]
     estimator:
-      _target_: falcon.estimators.Gaussian
-      loop:
-        num_epochs: 500
-        batch_size: 128
-        early_stop_patience: 40
-        cache_sync_every: 1
-        cache_on_device: false
-      network:
-        hidden_dim: 256
-        num_layers: 3
-        momentum: 0.10
-        min_var: 1.0e-20
-        eig_update_freq: 1
+      # falcon >= 0.5: estimator options are flat constructor kwargs (no loop/network/
+      # optimizer/inference sections).
+      _target_: falcon.estimators.GaussianFullCov
+      # Training loop
+      max_epochs: 500
+      batch_size: 128
+      early_stop_patience: 40
+      cache_sync_every: 1
+      cache_on_device: false
+      # Network
+      hidden_dim: 256
+      num_layers: 3
+      momentum: 0.10
+      min_var: 1.0e-20
+      eig_update_freq: 1
+      # Optimizer
+      lr: 0.001
+      betas: [0.9, 0.9]
+      lr_decay_factor: 0.5
+      lr_patience: 64
+      # Inference
+      gamma: 0.5
+      discard_samples: false
+      log_ratio_threshold: -20.0
       embedding:
         # [Re, Im] of the observed first row V_ref[0, 1:] (always-zero entries masked
         # from the first batch): 2*M features, M = 230 observed of nant-1 = 306.
@@ -307,15 +318,6 @@ graph:
         # upper-triangle variant embedding.VRefUpperTriEmbedding, 2*26725 features, reaches all.)
         _target_: embedding.VRefFirstRowEmbedding
         _input_:  [V_ref]
-      optimizer:
-        lr: 0.001
-        betas: [0.9, 0.9]
-        lr_decay_factor: 0.5
-        scheduler_patience: 64
-      inference:
-        gamma: 0.5
-        discard_samples: false
-        log_ratio_threshold: -20.0
     sample_chunk_size: 128
     ray:
       num_gpus: 0.9
@@ -342,13 +344,23 @@ graph:
         - ['uniform', -1.2, -0.5]  # log10(k_break) — turnover wavenumber [Mpc^-1]
     estimator:
       _target_: falcon.estimators.Flow
-      loop:
-        num_epochs: 400
-        batch_size: 128
-        early_stop_patience: 64
-      network:
-        net_type: maf # nsf, zuko_gf, maf, nice, sospf, naf, gf
-        theta_norm: true
+      # Training loop
+      max_epochs: 400
+      batch_size: 128
+      early_stop_patience: 64
+      # Network
+      net_type: maf # nsf, zuko_gf, maf, nice, sospf, naf, gf
+      theta_norm: true
+      # Optimizer
+      lr: 0.001
+      lr_decay_factor: 0.5
+      lr_patience: 16
+      # Inference
+      gamma: 0.5
+      discard_samples: false
+      log_ratio_threshold: -20
+      sample_reference_posterior: false
+      use_best_models: true
       embedding:
         # MLP(log10 pk_obs, empty + no-data k-bins masked) -> feat_dim, plus polar
         # features [log|v|/10, cos, sin] of the observed V_ref first row:
@@ -359,16 +371,6 @@ graph:
         roundoff_rtol: 1.0e-11   # pk bins below this x subset peak = FFT round-off → masked
         log_floor:     1.0e-15   # log10(pk.clamp(min=log_floor)); bins with data >= 2.5e-3
         _input_:  [pk_obs, V_ref]
-      optimizer:
-        lr: 0.001
-        lr_decay_factor: 0.5
-        scheduler_patience: 16
-      inference:
-        gamma: 0.5
-        discard_samples: false
-        log_ratio_threshold: -20
-        sample_reference_posterior: false
-        use_best_models_during_inference: true
     ray:
       num_gpus: 0.9
 
