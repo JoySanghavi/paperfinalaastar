@@ -2,7 +2,8 @@
 Embedding networks for the two-stage inference (config.yml `embedding._target_`).
 
   Stage 1  q(z  | V_ref)
-      VRefFirstRowEmbedding   [Re, Im] of the observed first row of V_ref (baselines with g_0)
+      VRefFirstRowEmbedding   [Re, Im] of the observed first row of V_ref (baselines with g_0),
+                              unknown antennas only
       VRefUpperTriEmbedding   [Re, Im] of every observed baseline (strict upper triangle)
   Stage 2  q(pw | pk_obs, V_ref)
       PkVRefEmbedding         MLP(log10 P(k)) + polar features of the V_ref first row
@@ -15,6 +16,12 @@ KNOWN_ANT = 200 that covers all 106 unknown antennas (1-106). For larger unknown
 fail (KNOWN_ANT = 100: antennas 201-206 have no such baseline); the upper-triangle variants
 reach every antenna connected to g_0 or a known antenna through observed baselines.
 
+VRefFirstRowEmbedding drops the baselines to the KNOWN_ANT known antennas (g = 1): they are
+S_ref[0, j] in every simulation, carry no information on z, and their float32 values differ by
+~1e-9 between CPU and GPU. The Gaussian estimator whitens each feature by its training std, so a
+constant feature turned that rounding into a ~50σ input at an observation made on the other
+device (output/run_01: z posterior uncorrelated with the truth).
+
 Entries that are always zero (unobserved baselines in V_ref, empty k-bins in pk_obs) are
 removed by MaskedFlatten, using a non-zero test on the first batch seen.
 """
@@ -23,6 +30,7 @@ import torch
 import torch.nn as nn
 
 import functionlistnew as func
+import settings
 
 torch.manual_seed(42)
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -56,13 +64,20 @@ class MaskedFlatten(nn.Module):
 
 
 class VRefRow(nn.Module):
-    """Observed off-diagonal first row of V_ref: (B, N, N) complex → (B, M) complex."""
-    def __init__(self):
+    """
+    Observed off-diagonal first row of V_ref: (B, N, N) complex → (B, M) complex.
+
+    known_ant: drop the last known_ant antennas (the known-gain block of the antenna layout, see
+    settings.KNOWN_ANT), keeping j = 1 .. N-1-known_ant.
+    """
+    def __init__(self, known_ant=0):
         super().__init__()
+        self.known_ant = known_ant
         self.flat = MaskedFlatten()
 
     def forward(self, V_ref):
-        return self.flat(_to_tensor(V_ref, torch.complex64)[:, 0, 1:])
+        V = _to_tensor(V_ref, torch.complex64)
+        return self.flat(V[:, 0, 1:V.shape[-1] - self.known_ant])
 
 
 class VRefUpper(nn.Module):
@@ -116,11 +131,12 @@ class _ObsVRefEmbedding(nn.Module):
 class VRefFirstRowEmbedding(nn.Module):
     """
     Input:  V_ref (B, N, N) complex
-    Output: (B, 2M) float64 — [Re, Im] of V_ref[:, 0, 1:] on the M observed baselines.
+    Output: (B, 2M) float64 — [Re, Im] of V_ref[:, 0, j] on the M observed baselines to the
+            unknown antennas j = 1 .. N-1-KNOWN_ANT (M = 106 for AA*, KNOWN_ANT = 200).
     """
     def __init__(self):
         super().__init__()
-        self.row = VRefRow()
+        self.row = VRefRow(known_ant=settings.KNOWN_ANT)
 
     def forward(self, V_ref):
         row = self.row(V_ref)

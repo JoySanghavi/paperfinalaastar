@@ -22,8 +22,8 @@
 logging:
   wandb:
     enabled: true
-    project: run_01
-    group: Paperenv
+    project: Paperenv
+    group: run_03
     dir: ${run_dir}
   local:
     enabled: true
@@ -293,26 +293,35 @@ graph:
       max_epochs: 500
       batch_size: 128
       early_stop_patience: 40
+      # New simulations come from the prior for the first 100 epochs, so the network learns
+      # V_ref -> z over the whole prior before the proposal starts to narrow.
+      prior_epochs: 100
       cache_sync_every: 1
       cache_on_device: false
       # Network
       hidden_dim: 256
       num_layers: 3
       momentum: 0.10
-      min_var: 1.0e-20
+      # Floor on the variances the estimator whitens by (input std >= 1e-3; V_ref features
+      # have std ~1.2e-2) and on the latent posterior variance. At 1e-20 a constant input
+      # feature was divided by 1e-10, so float rounding became a huge input (output/run_01).
+      min_var: 1.0e-6
       eig_update_freq: 1
       # Optimizer
       lr: 0.001
       betas: [0.9, 0.9]
       lr_decay_factor: 0.5
-      lr_patience: 64
+      # Below early_stop_patience, so the learning rate can drop before training stops
+      # (at 64 it never did: output/run_01 stayed at lr = 1e-3 until early stopping).
+      lr_patience: 20
       # Inference
       gamma: 0.5
       discard_samples: false
       log_ratio_threshold: -20.0
       embedding:
-        # [Re, Im] of the observed first row V_ref[0, 1:] (always-zero entries masked
-        # from the first batch): 2*M features, M = 230 observed of nant-1 = 306.
+        # [Re, Im] of the observed first row V_ref[0, j] for the unknown antennas j = 1-106
+        # only (always-zero entries masked from the first batch): 2*M features, M = 106. The
+        # 124 observed baselines to known antennas are constant (S_ref[0, j]) and are dropped.
         # All 106 unknown antennas share an observed baseline with antenna 0, so the first
         # row constrains every gain. (With KNOWN_ANT = 100, antennas 201-206 had none; the
         # upper-triangle variant embedding.VRefUpperTriEmbedding, 2*26725 features, reaches all.)

@@ -132,7 +132,7 @@ grid; 26 725 are observed, covering 76.5 % of the 128² UV cells.
 
 | Stage | Posterior | Data | Estimator | Embedding |
 |---|---|---|---|---|
-| 1 — calibration | q(z \| V_ref) | calibrator visibilities | full-covariance Gaussian (`GaussianFullCov`) | `VRefFirstRowEmbedding`: [Re, Im] of the 230 observed first-row baselines |
+| 1 — calibration | q(z \| V_ref) | calibrator visibilities | full-covariance Gaussian (`GaussianFullCov`) | `VRefFirstRowEmbedding`: [Re, Im] of the 106 observed first-row baselines to the unknown stations |
 | 2 — science | q(pw \| pk_obs, V_ref) | P(k) of the dirty image + V_ref | normalising flow (MAF) | `PkVRefEmbedding`: MLP(log10 pk_obs) + [log\|V\|, cos, sin] of the V_ref first row |
 
 Both are trained together on simulations drawn from the priors in `config.yml` (uniform; pw
@@ -397,10 +397,19 @@ Nothing in the project is written by the tests (scripts and notebooks run with t
 
 ## Notes and known limitations
 
-* **First-row embedding.** Stage 1 uses only the first row of V_ref (230 observed baselines). With
-  `KNOWN_ANT = 200` every unknown station has such a baseline. If you lower `KNOWN_ANT`, check this
-  again (with 100 known, stations 201–206 had none and stayed at the prior);
-  `VRefUpperTriEmbedding` uses all 26 725 observed baselines.
+* **First-row embedding.** Stage 1 uses only the first row of V_ref, and of it only the baselines to
+  the unknown stations (106 of the 230 observed). With `KNOWN_ANT = 200` every unknown station has
+  such a baseline. If you lower `KNOWN_ANT`, check this again (with 100 known, stations 201–206 had
+  none and stayed at the prior); `VRefUpperTriEmbedding` uses all 26 725 observed baselines.
+* **Constant inputs and CPU vs GPU.** The 124 first-row baselines to known stations equal
+  S_ref[0, j] in every simulation, and their float32 values differ by ~1e-9 between CPU and GPU.
+  `GaussianFullCov` divides each input by its training std, floored at √`min_var`; with
+  `min_var = 1e-20` a constant feature was divided by 1e-10. In `output/run_01` (data made on the
+  CPU, trained on the GPU) that turned the rounding difference into a ~50σ input at the
+  observation: the network ignored V_ref there, the proposal stayed at z ≈ 0 and the z posterior
+  was uncorrelated with the truth. The embedding now drops those baselines and `min_var = 1e-6`
+  (std floor 1e-3; the informative features have std ≈ 1.2e-2). Still, make `data/` and train on
+  the same kind of device where you can.
 * **Outer stations.** Stations with index ≥ 200 have a median of 2 % of their baselines observed;
   49 % of the baselines involving a known-gain station are unobserved.
 * **Gain errors only partly average out in the UV maps.** Each UV pixel holds the

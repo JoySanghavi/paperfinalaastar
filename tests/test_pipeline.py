@@ -404,9 +404,23 @@ class TestEmbeddings(unittest.TestCase):
             V = model.ReferenceVisFromGains().simulate_batch(2, np.repeat(true_gains_np(), 2, 0))
         cnt = to_np(model.sky_matrix.counts)
         i = to_np(model.sky_matrix.i_idx)
-        n_row, n_all = int((cnt[i == 0] > 0).sum()), int((cnt > 0).sum())
+        n_row = int((cnt[i == 0][:model.N_UNKNOWN] > 0).sum())   # baselines (0, j), j unknown
+        n_all = int((cnt > 0).sum())
+        self.assertEqual(n_row, model.N_UNKNOWN)                    # every unknown gain is seen
         self.assertEqual(embedding.VRefFirstRowEmbedding()(V).shape, (2, 2 * n_row))
         self.assertEqual(embedding.VRefUpperTriEmbedding()(V).shape, (2, 2 * n_all))
+
+    def test_first_row_ignores_known_antennas(self):
+        # baselines to known antennas are constant (S_ref) and must not reach the Stage-1 network:
+        # their CPU/GPU rounding difference, whitened by a zero training std, broke output/run_01
+        import embedding
+        with _NoiseOverride(0.0):
+            V = model.ReferenceVisFromGains().simulate_batch(2, np.repeat(true_gains_np(), 2, 0))
+        emb = embedding.VRefFirstRowEmbedding()
+        out = emb(V)
+        V2 = V.copy()
+        V2[:, 0, 1 + model.N_UNKNOWN:] *= 1.5
+        self.assertTrue(torch.equal(emb(V2), out))
 
     def test_pk_embedding_forward(self):
         import embedding
